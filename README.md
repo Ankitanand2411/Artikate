@@ -13,13 +13,23 @@ docker compose exec web python manage.py migrate
 docker compose exec web python manage.py seed_demo_data
 ```
 
-`seed_demo_data` prints an API token for the `demo` user at the end. Then:
+To start from a genuinely empty database (this is what the screen recording
+shows), wipe the volume first:
+
+```bash
+docker compose down -v
+docker compose up --build -d
+```
+
+`seed_demo_data` prints an API token on its last line. Every endpoint except
+`/health/` requires it. Copy the token itself — no angle brackets:
 
 ```bash
 # health (unauthenticated)
 curl http://localhost:8000/api/v1/health/
 
-TOKEN=<token printed by seed_demo_data>
+# paste the 40-character token printed by seed_demo_data
+TOKEN=b0d9f54ee7809287d1492173796dc80a51d67640
 
 # list assets
 curl -H "Authorization: Token $TOKEN" http://localhost:8000/api/v1/assets/
@@ -29,19 +39,29 @@ curl -X POST -H "Authorization: Token $TOKEN" -H "Content-Type: application/json
   -d '{"asset_tag":"SEN-001","employee_code":"EMP-001","due_at":"2026-09-10T00:00:00Z"}' \
   http://localhost:8000/api/v1/checkouts/
 
-# return it (id from the previous response)
+# run that same command again -> 409, the asset is now CHECKED_OUT
+
+# inactive employee (EMP-004 is seeded inactive) -> 400
+curl -X POST -H "Authorization: Token $TOKEN" -H "Content-Type: application/json" \
+  -d '{"asset_tag":"SEN-002","employee_code":"EMP-004","due_at":"2026-09-10T00:00:00Z"}' \
+  http://localhost:8000/api/v1/checkouts/
+
+# return it -- substitute the numeric id from the 201 response
 curl -X POST -H "Authorization: Token $TOKEN" -H "Content-Type: application/json" \
   -d '{"condition_note":"all good","needs_maintenance":false}' \
-  http://localhost:8000/api/v1/checkouts/<id>/return/
+  http://localhost:8000/api/v1/checkouts/7/return/
 
 # employee summary / overdue report
 curl -H "Authorization: Token $TOKEN" http://localhost:8000/api/v1/employees/EMP-001/summary/
 curl -H "Authorization: Token $TOKEN" http://localhost:8000/api/v1/reports/overdue/
 ```
 
+Piping through `jq` (`sudo apt install jq`) makes the JSON readable:
+`curl -s ... | jq`.
+
 A fresh token can also be obtained at `POST /api/v1/auth/token/` with
-`{"username": "demo", "password": "demo-password"}`, or via
-`manage.py drf_create_token <user>`.
+`{"username": "demo", "password": "demo-password"}`, or by re-printing the
+existing one with `manage.py drf_create_token demo`.
 
 ## Running the tests
 
@@ -69,6 +89,10 @@ lists paginated at 20.
 | `GET /reports/overdue/` | Open & past due, most overdue first, no N+1 |
 | `GET /health/` | Public; reports DB connectivity |
 
+Note that `/assets/{id}/` takes the numeric primary key while
+`/employees/{code}/summary/` takes the employee code (`EMP-001`), matching
+the paths given in the specification.
+
 ## Background task
 
 `tracker.tasks.flag_overdue_checkouts` creates one `OverdueNotice` per open
@@ -77,6 +101,13 @@ unique constraint on `(checkout, notice_date)` plus
 `bulk_create(ignore_conflicts=True)` — so repeated runs cannot duplicate.
 Scheduled hourly via Celery Beat (`beat` service in docker-compose,
 Redis broker).
+
+To run it by hand:
+
+```bash
+docker compose exec web python manage.py shell -c \
+  "from tracker.tasks import flag_overdue_checkouts; print(flag_overdue_checkouts())"
+```
 
 ## Design decisions & assumptions
 
@@ -109,6 +140,9 @@ Redis broker).
 - **Employee summary**: employee existence check is one lookup (needed for
   the 404), then all four numbers come from a single `.aggregate()` query.
   `mean_hold_days` is `null` when the employee has no returned items.
+- **Asset `status` is read-only through the serializer.** It changes only as
+  a side effect of check-out and return, so an asset's status can never
+  drift out of sync with its check-out history.
 - **Seed command is safely re-runnable** rather than strictly no-op
   idempotent: assets/employees are `get_or_create`d; demo check-outs are
   rebuilt each run so the documented counts stay exact. `checked_out_at` is
@@ -120,9 +154,18 @@ Redis broker).
 
 ## Known gaps
 
-- No rate limiting, no structured logging/metrics, `DEBUG` handling is
-  minimal — out of scope for the time budget but first on the list for real
-  production.
+- **Credentials in `docker-compose.yml` and `.env.example` are development
+  defaults**, chosen so the stack comes up with zero configuration. In
+  production these would come from the environment or a secrets manager,
+  `DJANGO_SECRET_KEY` would be injected rather than defaulted, and `DEBUG`
+  pinned off.
+- **`collectstatic` is not run in the image**, so the DRF browsable API
+  renders unstyled with `DEBUG=0`. It has no effect on the JSON API. The fix
+  is a `RUN python manage.py collectstatic --noinput` line in the Dockerfile
+  plus a static file server; left out because nothing in the assessment
+  depends on the browsable UI.
+- No rate limiting and no structured logging or metrics — out of scope for
+  the time budget but first on the list for real production.
 - The employee open-count uses a row lock rather than a database constraint;
   a belt-and-braces partial unique index (`UNIQUE(asset_id) WHERE
   returned_at IS NULL`) would make asset double-checkout impossible even for
@@ -133,7 +176,7 @@ Redis broker).
 
 ## Screen recording
 
-<link goes here>
+Video walkthrough: [Google Drive – demo recordings](https://drive.google.com/drive/folders/1CA7LS_9ouR_OKnCpYE-qeSygFWHIHZNC)
 
 ## Project layout
 
