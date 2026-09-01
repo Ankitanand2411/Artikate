@@ -176,7 +176,7 @@ docker compose exec web python manage.py shell -c \
 
 ## Screen recording
 
-https://github.com/Ankitanand2411/Artikate/raw/main/demo.mp4
+Video walkthrough: [Google Drive – demo recordings](https://drive.google.com/drive/folders/1CA7LS_9ouR_OKnCpYE-qeSygFWHIHZNC)
 
 ## Project layout
 
